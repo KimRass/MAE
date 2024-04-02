@@ -40,6 +40,11 @@ class MSA(nn.Module):
     def __init__(self, hidden_size, n_heads, drop_prob=DROP_PROB):
         super().__init__()
 
+        assert (
+            hidden_size % n_heads == 0,
+            "`hidden_size` must be divisible by `n_heads`!",
+        )
+
         self.head_size = hidden_size // n_heads
         self.n_heads = n_heads
 
@@ -138,7 +143,10 @@ class Tokenizer(nn.Module):
     def __init__(self, img_size, patch_size):
         super().__init__()
 
-        assert img_size % patch_size == 0, "`img_size` must be divisible by `patch_size`!"
+        assert (
+            img_size % patch_size == 0,
+            "`img_size` must be divisible by `patch_size`!",
+        )
 
         self.cell_size = img_size // patch_size
 
@@ -339,11 +347,11 @@ class MAE(nn.Module):
 
 if __name__ == "__main__":
     patch_size = 16
-    hidden_size = 192
+    hidden_size = 1024
+    mlp_size = hidden_size * 4
     img_size = 256
-    n_layers = 12
-    mlp_size = 3072
-    n_heads = 12
+    n_layers = 24
+    n_heads = 8
     image = torch.randn((4, 3, img_size, img_size))
     model = MAE(
         img_size,
@@ -353,6 +361,6 @@ if __name__ == "__main__":
         mlp_size,
         n_heads,
     )
-    # mask, out = model(image)
+    mask, out = model(image)
     loss = model.get_loss(image)
     print(loss)
