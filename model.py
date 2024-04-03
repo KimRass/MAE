@@ -6,8 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import einops
-
-from utils import denorm
+import torchvision.transforms.functional as TF
 
 
 class PatchEmbedding(nn.Module):
@@ -55,97 +54,76 @@ class PositionalEmbedding(nn.Module):
         self.register_buffer("pos_enc_mat", self.pe_mat)
 
 
-class Tokenizer(nn.Module):
-    """
-    "First we generate a token for every input patch (by linear projection with an added
-    positional embedding)."
-    """
-    def __init__(self, img_size, patch_size, embed_dim):
-        super().__init__()
-
-        assert (
-            img_size % patch_size == 0,
-            "`img_size` must be divisible by `patch_size`!",
-        )
-
-        self.cell_size = img_size // patch_size
-
-        self.patch_embed = PatchEmbedding(patch_size=patch_size, embed_dim=embed_dim)
-        self.pos_embed = PositionalEmbedding(embed_dim=embed_dim)
-
-    def forward(self, x):
-        x = self.patch_embed(image)
-        x += einops.repeat(
-            self.pos_embed.pe_mat, pattern="l d -> b l d", b=x.size(0),
-        )[:, : x.size(1), :]
-        return x
-
-
-class ResConvSelfAttn(nn.Module):
-    def __init__(self, channels, n_groups=32):
-        super().__init__()
-
-        self.gn = nn.GroupNorm(num_groups=n_groups, num_channels=channels)
-        self.qkv_proj = nn.Conv2d(channels, channels * 3, 1, 1, 0)
-        self.out_proj = nn.Conv2d(channels, channels, 1, 1, 0)
-        self.scale = channels ** (-0.5)
-
-    def forward(self, x):
-        b, c, h, w = x.shape
-        skip = x
-
-        x = self.gn(x)
-        x = self.qkv_proj(x)
-        q, k, v = torch.chunk(x, chunks=3, dim=1)
-        attn_score = torch.einsum(
-            "bci,bcj->bij", q.view((b, c, -1)), k.view((b, c, -1)),
-        ) * self.scale
-        attn_weight = F.softmax(attn_score, dim=2)        
-        x = torch.einsum("bij,bcj->bci", attn_weight, v.view((b, c, -1)))
-        x = x.view(b, c, h, w)
-        x = self.out_proj(x)
-        return x + skip
-
-
 class MSA(nn.Module):
     def __init__(self, width, n_heads, drop_prob=0.1):
         super().__init__()
 
-        assert (
-            width % n_heads == 0,
+        assert width % n_heads == 0, (
             "`width` must be divisible by `n_heads`!",
         )
-
-        self.head_size = width // n_heads
+        self.head_width = width // n_heads
         self.n_heads = n_heads
 
-        self.qkv_proj = nn.Linear(width, 3 * n_heads * self.head_size, bias=False)
+        self.qkv_proj = nn.Linear(width, 3 * n_heads * self.head_width, bias=False)
+        self.scale = width ** (-0.5)
         self.drop = nn.Dropout(drop_prob)
         self.out_proj = nn.Linear(width, width, bias=False)
-
-    def _rearrange(self, x):
-        return einops.rearrange(
-            x, pattern="b n (h d) -> b h n d", h=self.n_heads, d=self.head_size,
-        )
-
-    @staticmethod
-    def _get_attention_score(q, k):
-        attn_score = torch.einsum("bhnd,bhmd->bhnm", q, k)
-        return attn_score
 
     def forward(self, x):
         qkv = self.qkv_proj(x)
         q, k, v = torch.chunk(qkv, chunks=3, dim=2)
-        q = self._rearrange(q)
-        k = self._rearrange(k)
-        v = self._rearrange(v)
-        attn_score = self._get_attention_score(q=q, k=k)
-        attn_weight = F.softmax(attn_score / (self.head_size ** 0.5), dim=3)
-        x = torch.einsum("bhnm,bhmd->bhnd", attn_weight, v)
-        x = einops.rearrange(x, pattern="b h n d -> b n (h d)")
+        batch_size = x.size(0)
+        attn_score = torch.einsum(
+            "binh,bjnh->bijn",
+            q.view(batch_size, -1, self.n_heads, self.head_width),
+            k.view(batch_size, -1, self.n_heads, self.head_width)
+        ) * self.scale
+        attn_weight = F.softmax(attn_score, dim=2)
+        x = torch.einsum(
+            "bijn,bjnh->binh",
+            attn_weight,
+            k.view(batch_size, -1, self.n_heads, self.head_width)
+        )
+        x = einops.rearrange(x, pattern="b i n h -> b i (n h)")
         x = self.out_proj(x)
-        x = self.drop(x)
-        return x
+        return self.drop(x)
+# class MSA(nn.Module):
+#     def __init__(self, width, n_heads, drop_prob=0.1):
+#         super().__init__()
+
+#         assert width % n_heads == 0, (
+#             "`width` must be divisible by `n_heads`!",
+#         )
+#         self.head_size = width // n_heads
+#         self.n_heads = n_heads
+
+#         self.qkv_proj = nn.Linear(width, 3 * n_heads * self.head_size, bias=False)
+#         self.drop = nn.Dropout(drop_prob)
+#         self.out_proj = nn.Linear(width, width, bias=False)
+
+#     def _rearrange(self, x):
+#         return einops.rearrange(
+#             x, pattern="b n (h d) -> b h n d", h=self.n_heads, d=self.head_size,
+#         )
+
+#     @staticmethod
+#     def _get_attention_score(q, k):
+#         attn_score = torch.einsum("bhnd,bhmd->bhnm", q, k)
+#         return attn_score
+
+#     def forward(self, x):
+#         qkv = self.qkv_proj(x)
+#         q, k, v = torch.chunk(qkv, chunks=3, dim=2)
+#         q = self._rearrange(q)
+#         k = self._rearrange(k)
+#         v = self._rearrange(v)
+#         attn_score = self._get_attention_score(q=q, k=k)
+#         attn_weight = F.softmax(attn_score / (self.head_size ** 0.5), dim=3)
+#         x = torch.einsum("bhnm,bhmd->bhnd", attn_weight, v)
+#         x = einops.rearrange(x, pattern="b h n d -> b n (h d)")
+#         x = self.out_proj(x)
+#         x = self.drop(x)
+#         return x
 
 
 class SkipConnection(nn.Module):
@@ -217,25 +195,25 @@ class TransformerBlocks(nn.Module):
         return x
 
 
-class Shuffler(nn.Module):
+class PatchShuffle(nn.Module):
     """
     "Next we randomly shuffle the list of tokens and remove the last portion of the list, based on the masking ratio. This process produces a small subset of tokens for the encoder and is equivalent to sampling patches without replacement."
     """
-    def __init__(self, mask_ratio=0.75):
+    def __init__(self):
         super().__init__()
 
-        self.mask_ratio = mask_ratio
-
-    def forward(self, x):
+    def forward(self, x, mask_ratio):
         n_tokens = x.size(1)
         shuffled_indices = torch.randperm(n_tokens)
-        mask_indices = shuffled_indices[-int(n_tokens * self.mask_ratio):]
+        mask_indices = shuffled_indices[-int(n_tokens * mask_ratio):]
         mask = torch.isin(torch.arange(n_tokens), mask_indices)
         return x[:, ~mask, :], mask
 
 
 class Encoder(nn.Module):
     """
+    "First we generate a token for every input patch (by linear projection with an added
+    positional embedding)."
     "Our encoder is a ViT but applied only on visible, unmasked patches. Just as in a standard ViT, then processes the resulting set via a series of Transformer blocks. However, our encoder only operates on a small subset (e.g., 25%) of the full set. Masked patches are removed; no mask tokens are used."
     "After encoding, we append a list of mask tokens to the list of encoded patches, and
     unshuffle this full list (inverting the random shuffle operation) to align all tokens
@@ -249,31 +227,37 @@ class Encoder(nn.Module):
         depth,
         width,
         n_heads,
-        mask_ratio,
     ):
         super().__init__()
 
-        self.tokenizer = Tokenizer(
-            img_size=img_size, patch_size=patch_size, embed_dim=width,
-        )
-        self.shuffler = Shuffler(mask_ratio=mask_ratio)
+        self.width = width
+        self.cell_size = img_size // patch_size
+
+        self.patch_embed = PatchEmbedding(patch_size=patch_size, embed_dim=width)
+        self.pos_embed = PositionalEmbedding(embed_dim=width)
+        self.patch_shuffle = PatchShuffle()
         self.tf_block = TransformerBlocks(
             depth=depth,
             width=width,
             n_heads=n_heads,
         )
+        self.norm = nn.LayerNorm(width)
         self.mask_token = nn.Parameter(torch.randn((width,)))
 
-    def forward(self, image):
-        token = self.tokenizer(image)
-        unmasked_token, mask = self.shuffler(token)
+    def forward(self, image, mask_ratio):
+        x = self.patch_embed(image)
+        x += einops.repeat(
+            self.pos_embed.pe_mat.to(x.device), pattern="l d -> b l d", b=x.size(0),
+        )[:, : x.size(1), :]
+        unmasked_token, mask = self.patch_shuffle(x, mask_ratio=mask_ratio)
         x = self.tf_block(unmasked_token)
-        
-        y = self.mask_token[None, None, :].repeat(
-            x.size(0), self.tokenizer.cell_size ** 2, 1,
-        )
-        y[:, ~mask, :] = x
-        return y, mask
+        x = self.norm(x)
+
+        new_token = einops.repeat(
+            self.mask_token, pattern="w -> b c w", b=x.size(0), c=self.cell_size ** 2,
+        ).clone()
+        new_token[:, ~mask, :] = x
+        return new_token, mask
 
 
 class Decoder(nn.Module):
@@ -287,9 +271,6 @@ class Decoder(nn.Module):
     The last layer of the decoder is a linear projection whose number of output channels
     equals the number of pixel values in a patch. The decoder’s output is reshaped to form
     a reconstructed image."
-    "Our loss function computes the mean squared error (MSE) between the reconstructed and
-    original images in the pixel space. We compute the loss only on masked patches,
-    similar to BERT."
     "The decoder is applied to this full list (with positional embeddings added)."
     """
     def __init__(
@@ -306,36 +287,39 @@ class Decoder(nn.Module):
         self.patch_size = patch_size
         self.img_size = img_size
         self.n_pixel_values = n_pixel_values
-
         self.cell_size = img_size // patch_size
 
-        self.pos_embed = nn.Parameter(torch.randn((1, self.cell_size ** 2, width)))
+        self.pos_embed = PositionalEmbedding(embed_dim=width)
         self.tf_block = TransformerBlocks(
             depth=depth,
             width=width,
             n_heads=n_heads,
         )
-        self.proj = nn.Linear(width, (patch_size ** 2) * 3 * n_pixel_values)
+        self.proj = nn.Linear(width, (patch_size ** 2) * 3)
 
     def forward(self, x):
-        x += self.pos_embed
+        x += einops.repeat(
+            self.pos_embed.pe_mat.to(x.device), pattern="l d -> b l d", b=x.size(0),
+        )[:, : x.size(1), :]
         x = self.tf_block(x)
         x = self.proj(x)
-        x = einops.rearrange(
+        return einops.rearrange(
             x,
-            pattern="b (i1 i2) (p1 p2 c n) -> b c (i1 p1) (i2 p2) n",
+            pattern="b (i1 i2) (p1 p2 c) -> b c (i1 p1) (i2 p2)",
             p1=self.patch_size,
             p2=self.patch_size,
-            i1=self.img_size // self.patch_size,
-            c=3,
+            i1=self.cell_size,
+            # c=3,
         )
-        return x
 
 
 class MAE(nn.Module):
     """
     "As the MAE encoder and decoder have different width, we adopt a linear projection
     layer after the encoder to match it."
+    "Our loss function computes the mean squared error (MSE) between the reconstructed and
+    original images in the pixel space. We compute the loss only on masked patches,
+    similar to BERT."
     """
     def __init__(
         self,
@@ -347,12 +331,14 @@ class MAE(nn.Module):
         dec_depth=2,
         dec_width=128,
         dec_n_heads=2,
-        mask_ratio=0.75,
     ):
         super().__init__()
 
         self.patch_size = patch_size
 
+        assert img_size % patch_size == 0, (
+            "`img_size` must be divisible by `patch_size`!",
+        )
         self.n_cells = img_size // patch_size
 
         self.encoder = Encoder(
@@ -361,7 +347,6 @@ class MAE(nn.Module):
             depth=enc_depth,
             width=enc_width,
             n_heads=enc_n_heads,
-            mask_ratio=mask_ratio,
         )
         self.proj = nn.Linear(enc_width, dec_width)
         self.decoder = Decoder(
@@ -372,22 +357,13 @@ class MAE(nn.Module):
             n_heads=dec_n_heads,
         )
 
-    def forward(self, image):
-        x, mask = self.encoder(image)
+    def forward(self, image, mask_ratio=0.75):
+        x, mask = self.encoder(image, mask_ratio=mask_ratio)
         x = self.proj(x)
         x = self.decoder(x)
         return x, mask
 
-    @staticmethod
-    def image_to_gt(image):
-        gt = denorm(image)
-        gt.clip_(min=0, max=1)
-        gt *= 255
-        return gt.long()
-
-    def get_loss(self, image):
-        out, mask = self(image)
-
+    def upsample_mask(self, mask, batch_size, device):
         up_mask = torch.repeat_interleave(
             torch.repeat_interleave(
                 mask.view(self.n_cells, self.n_cells),
@@ -396,15 +372,26 @@ class MAE(nn.Module):
             ),
             repeats=self.patch_size,
             dim=1,
+        ).to(device)
+        return einops.repeat(
+            up_mask, "h w -> b c h w", b=batch_size, c=3,
         )
-        gt = self.image_to_gt(image)
-        masked_out = out[:, :, up_mask, :]
-        masked_gt = gt[:, :, up_mask]    
-        return F.cross_entropy(
-            masked_out.view(-1, self.decoder.n_pixel_values),
-            masked_gt.view(-1),
-            reduction="mean",
+
+    def get_loss(self, image, mask_ratio=0.75):
+        out, mask = self(image, mask_ratio=mask_ratio)
+        up_mask = self.upsample_mask(
+            mask, batch_size=image.size(0), device=image.device,
         )
+        return torch.mean(
+            up_mask * F.mse_loss(out, image, reduction="none"),
+        )
+
+    def reconstruct(self, image, mask_ratio=0.75):
+        out, mask = self(image, mask_ratio=mask_ratio)
+        up_mask = self.upsample_mask(
+            mask, batch_size=image.size(0), device=image.device,
+        )
+        return torch.where(up_mask, out, image)
 
 
 # "We extract features from the encoder output for finetuning and linear probing. As ViT has a class token [16], to adapt to this design, in our MAE pre-training we append an auxiliary dummy token to the encoder input. This token will be treated as the class token for training the classifier in linear probing and fine-tuning. Our MAE works similarly well without this token (with average pooling)."
@@ -431,6 +418,5 @@ if __name__ == "__main__":
         dec_width,
         dec_n_heads,
     )
-    mask, out = model(image)
     loss = model.get_loss(image)
     print(loss)

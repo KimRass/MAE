@@ -30,3 +30,40 @@ def image_to_grid(image, n_cols, padding=1, mean=(0.5, 0.5, 0.5), std=(0.5, 0.5,
     grid.clamp_(0, 1)
     grid = TF.to_pil_image(grid)
     return grid
+
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+
+
+def get_device():
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        if torch.backends.mps.is_available():
+            device = torch.device("mps")
+        else:
+            device = torch.device("cpu")
+    return device
+
+
+def get_device():
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        if torch.backends.mps.is_available():
+            device = torch.device("mps")
+        else:
+            device = torch.device("cpu")
+    return device
+
+
+def get_grad_scaler(device):
+    return GradScaler() if device.type == "cuda" else None
