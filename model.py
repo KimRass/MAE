@@ -391,10 +391,43 @@ class MAE(nn.Module):
         up_mask = self.upsample_mask(
             mask, batch_size=image.size(0), device=image.device,
         )
-        return torch.where(up_mask, out, image)
+        masked_image = torch.where(up_mask, torch.full_like(image, fill_value=0), image)
+        recon_image = torch.where(up_mask, out, image)
+        return masked_image, recon_image
 
 
-# "We extract features from the encoder output for finetuning and linear probing. As ViT has a class token [16], to adapt to this design, in our MAE pre-training we append an auxiliary dummy token to the encoder input. This token will be treated as the class token for training the classifier in linear probing and fine-tuning. Our MAE works similarly well without this token (with average pooling)."
+class MAEForCls(MAE):
+    """
+    "We extract features from the encoder output for finetuning and linear probing.
+    As ViT has a class token, to adapt to this design, in our MAE pre-training
+    we append an auxiliary dummy token to the encoder input. This token will be treated
+    as the class token for training the classifier in linear probing and fine-tuning.
+    Our MAE works similarly well without this token (with average pooling)."
+    """
+    def __init__(
+        self,
+        n_classes,
+        img_size=256,
+        patch_size=16,
+        enc_depth=12,
+        enc_width=768,
+        enc_n_heads=12,
+    ):
+        super().__init__(
+            img_size=img_size,
+            patch_size=patch_size,
+            enc_depth=enc_depth,
+            enc_width=enc_width,
+            enc_n_heads=enc_n_heads,
+        )
+        self.proj = nn.Linear(enc_width, n_classes)
+
+    def forward(self, image):
+        x, _ = self.encoder(image, mask_ratio=0)
+        x = torch.mean(x, dim=1)
+        return self.proj(x)
+
+
 # "We do not use color jittering, drop path, or gradient clip."
 # "We use the linear lr scaling rule [20]: lr = base lr batchsize / 256. End-to-end fine-tuning."
 if __name__ == "__main__":
@@ -408,15 +441,26 @@ if __name__ == "__main__":
     dec_n_heads = 2
 
     image = torch.randn((4, 3, img_size, img_size))
-    model = MAE(
-        img_size,
-        patch_size,
-        enc_depth,
-        enc_width,
-        enc_n_heads,
-        dec_depth,
-        dec_width,
-        dec_n_heads,
+    # model = MAE(
+    #     img_size=img_size,
+    #     patch_size=patch_size,
+    #     enc_depth=enc_depth,
+    #     enc_width=enc_width,
+    #     enc_n_heads=enc_n_heads,
+    #     dec_depth=dec_depth,
+    #     dec_width=dec_width,
+    #     dec_n_heads=dec_n_heads,
+    # )
+    # loss = model.get_loss(image)
+    # print(loss)
+
+    model = MAEForCls(
+        n_classes=1000,
+        img_size=img_size,
+        patch_size=patch_size,
+        enc_depth=enc_depth,
+        enc_width=enc_width,
+        enc_n_heads=enc_n_heads,
     )
-    loss = model.get_loss(image)
-    print(loss)
+    out = model(image)
+    print(out.shape)

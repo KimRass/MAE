@@ -1,17 +1,39 @@
-import torch
 from torch.optim import AdamW
+from pathlib import Path
+import argparse
 
-from utils import get_device, get_grad_scaler, image_to_grid
+from utils import (
+    get_device,
+    get_grad_scaler,
+    image_to_grid,
+    save_image,
+    merge_images_h,
+)
 from model import MAE
 from imagenet1k import get_imagenet1k_train_dl
 
 
-if __name__ == "__main__":
+def get_args():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("--data_dir", type=str, required=True)
+
+    args = parser.parse_args()
+
+    args_dict = vars(args)
+    new_args_dict = dict()
+    for k, v in args_dict.items():
+        new_args_dict[k.upper()] = v
+    args = argparse.Namespace(**new_args_dict)
+    return args
+
+
+def main():
+    args = get_args()
     DEVICE = get_device()
 
-    ROOT = "/home/jbkim/Documents/datasets/imagenet1k/train"
     BATCH_SIZE = 4
-    dl = get_imagenet1k_train_dl(ROOT, batch_size=BATCH_SIZE, n_cpus=2)
+    dl = get_imagenet1k_train_dl(args.DATA_DIR, batch_size=BATCH_SIZE, n_cpus=2)
     di = iter(dl)
 
     patch_size = 16
@@ -37,18 +59,29 @@ if __name__ == "__main__":
     optim = AdamW(model.parameters(), lr=LR, betas=(0.9, 0.95), weight_decay=0.05)
     scaler = get_grad_scaler(device=DEVICE)
 
-    image, _ = next(di)
-    image = image.to(DEVICE)
+    N_EPOCHS = 600
+    SAMPLES_DIR = Path(__file__).resolve().parent/"samples"
+    for batch_idx in range(1, 11):
+        ori_image, _ = next(di)
+        ori_image = ori_image.to(DEVICE)
 
-    N_EPOCHS = 800
-    image_to_grid(image, n_cols=int(BATCH_SIZE ** 0.5)).show()
-    for epoch in range(1, N_EPOCHS + 1):
-        loss = model.get_loss(image)
-        if epoch % 100 == 0 or epoch == N_EPOCHS:
-            print(f"[ {epoch}/{N_EPOCHS} ][ {loss:.3f} ]")
-        scaler.scale(loss).backward()
-        scaler.step(optim)
-        scaler.update()
+        ori_grid = image_to_grid(ori_image, n_cols=int(BATCH_SIZE ** 0.5))
 
-    recon_image = model.reconstruct(image)
-    image_to_grid(recon_image, n_cols=int(BATCH_SIZE ** 0.5)).show()
+        for epoch in range(1, N_EPOCHS + 1):
+            loss = model.get_loss(ori_image)
+            if epoch % 100 == 0 or epoch == N_EPOCHS:
+                print(f"[ {epoch}/{N_EPOCHS} ][ {loss:.3f} ]")
+            scaler.scale(loss).backward()
+            scaler.step(optim)
+            scaler.update()
+
+        masked_image, recon_image = model.reconstruct(ori_image)
+        masked_gird = image_to_grid(masked_image, n_cols=int(BATCH_SIZE ** 0.5))
+        recon_grid = image_to_grid(recon_image, n_cols=int(BATCH_SIZE ** 0.5))
+        
+        merged_grid = merge_images_h([masked_gird, recon_grid, ori_grid])
+        save_image(merged_grid, SAMPLES_DIR/f"{batch_idx}.jpg")
+
+
+if __name__ == "__main__":
+    main()

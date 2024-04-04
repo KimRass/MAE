@@ -1,19 +1,13 @@
 import torch
-import torchvision.transforms as T
 from torch.cuda.amp import GradScaler
 from torchvision.utils import make_grid
 import torchvision.transforms.functional as TF
-from PIL import Image, ImageDraw
-import pandas as pd
 from pathlib import Path
-from tqdm.auto import tqdm
-from time import time
-from datetime import timedelta
-from einops import rearrange
 import numpy as np
 import random
 import os
-import cv2
+import math
+from PIL import Image
 
 
 def denorm(x, mean=(0.457, 0.437, 0.404), std=(0.275, 0.271, 0.284)):
@@ -67,3 +61,39 @@ def get_device():
 
 def get_grad_scaler(device):
     return GradScaler() if device.type == "cuda" else None
+
+
+def create_dir(x):
+    x = Path(x)
+    if x.suffix:
+        x.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        x.mkdir(parents=True, exist_ok=True)
+
+
+def to_pil(img):
+    if not isinstance(img, Image.Image):
+        img = Image.fromarray(img)
+    return img
+
+
+def save_image(image, save_path):
+    create_dir(save_path)
+    to_pil(image).save(str(save_path), quality=100)
+    print(f"""Saved image as "{Path(save_path).name}".""")
+
+
+def merge_images_h(images):
+    sum_w = 0
+    min_h = math.inf
+    for image in images:
+        w, h = image.size
+        sum_w += w
+        min_h = min(min_h, h)
+    merged_image = Image.new(mode="RGB", size=(sum_w, min_h))
+
+    sum_w = 0
+    for image in images:
+        merged_image.paste(image, (sum_w, 0))
+        sum_w += image.width
+    return merged_image
