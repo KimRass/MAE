@@ -82,48 +82,11 @@ class MSA(nn.Module):
         x = torch.einsum(
             "bijn,bjnh->binh",
             attn_weight,
-            k.view(batch_size, -1, self.n_heads, self.head_width)
+            v.view(batch_size, -1, self.n_heads, self.head_width)
         )
         x = einops.rearrange(x, pattern="b i n h -> b i (n h)")
         x = self.out_proj(x)
         return self.drop(x)
-# class MSA(nn.Module):
-#     def __init__(self, width, n_heads, drop_prob=0.1):
-#         super().__init__()
-
-#         assert width % n_heads == 0, (
-#             "`width` must be divisible by `n_heads`!",
-#         )
-#         self.head_size = width // n_heads
-#         self.n_heads = n_heads
-
-#         self.qkv_proj = nn.Linear(width, 3 * n_heads * self.head_size, bias=False)
-#         self.drop = nn.Dropout(drop_prob)
-#         self.out_proj = nn.Linear(width, width, bias=False)
-
-#     def _rearrange(self, x):
-#         return einops.rearrange(
-#             x, pattern="b n (h d) -> b h n d", h=self.n_heads, d=self.head_size,
-#         )
-
-#     @staticmethod
-#     def _get_attention_score(q, k):
-#         attn_score = torch.einsum("bhnd,bhmd->bhnm", q, k)
-#         return attn_score
-
-#     def forward(self, x):
-#         qkv = self.qkv_proj(x)
-#         q, k, v = torch.chunk(qkv, chunks=3, dim=2)
-#         q = self._rearrange(q)
-#         k = self._rearrange(k)
-#         v = self._rearrange(v)
-#         attn_score = self._get_attention_score(q=q, k=k)
-#         attn_weight = F.softmax(attn_score / (self.head_size ** 0.5), dim=3)
-#         x = torch.einsum("bhnm,bhmd->bhnd", attn_weight, v)
-#         x = einops.rearrange(x, pattern="b h n d -> b n (h d)")
-#         x = self.out_proj(x)
-#         x = self.drop(x)
-#         return x
 
 
 class SkipConnection(nn.Module):
